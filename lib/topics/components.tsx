@@ -33,14 +33,18 @@ export const SentenceBox = ({ children }: { children: React.ReactNode }) => (
 export const RichText = ({ text }: { text: string }) => {
   if (!text) return null;
   
-  // Split by underline tags first
-  const parts = text.split(/(<u>.*?<\/u>)/g);
+  // Split by underline and asterisk (italic) tags first
+  const parts = text.split(/(<u>.*?<\/u>|\*.*?\*)/g);
   
   return (
     <>
       {parts.map((part, index) => {
         if (part.startsWith('<u>') && part.endsWith('</u>')) {
-          return <u key={index} className="decoration-slate-400 decoration-2 underline-offset-4">{part.replace(/<\/?u>/g, '')}</u>;
+          return <u key={index} className="decoration-slate-400 decoration-2 underline-offset-4 font-bold">{part.replace(/<\/?u>/g, '')}</u>;
+        }
+        
+        if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+          return <em key={index} className="italic text-slate-700 font-semibold">{part.slice(1, -1)}</em>;
         }
         
         // Handle "Directions:" and "Questions X-Y:" triggers

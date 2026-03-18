@@ -1,10 +1,12 @@
 'use client';
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { BookOpen, Brain, CheckCircle2, XCircle, ArrowRight, ArrowLeft, Menu, X, LayoutDashboard, Target } from 'lucide-react';
+import { BookOpen, Brain, CheckCircle2, XCircle, ArrowRight, ArrowLeft, Menu, X, LayoutDashboard, Target, Settings, Clock } from 'lucide-react';
 import { chapters, QuizQuestion, RichText } from '@/lib/topics';
 
-const STORAGE_KEY = 'psyduck-reviewer-v1';
+const STORAGE_KEY = 'psyduck-reviewer-v2';
+
+type TimerMode = 'off' | 'per-question' | 'per-set' | 'both';
 
 export default function Page() {
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
@@ -16,18 +18,32 @@ export default function Page() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
 
+  // Timer State
+  const [timerMode, setTimerMode] = useState<TimerMode>('off');
+  const [timerSettings, setTimerSettings] = useState({ perQuestion: 90, perSet: 120 }); // seconds
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  
+  const [timeRemainingQuestion, setTimeRemainingQuestion] = useState(90);
+  const [timeRemainingSet, setTimeRemainingSet] = useState(0);
+  const [isSetTimerRunning, setIsSetTimerRunning] = useState(false);
+  const [isSetTimeUp, setIsSetTimeUp] = useState(false);
+
   // Hydrate from localStorage on mount
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
-        const { chapterIndex, allAnswers: savedAnswers } = JSON.parse(saved);
-        if (typeof chapterIndex === 'number' && chapterIndex < chapters.length) {
-          setCurrentChapterIndex(chapterIndex);
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.chapterIndex === 'number' && parsed.chapterIndex < chapters.length) {
+          setCurrentChapterIndex(parsed.chapterIndex);
         }
-        if (savedAnswers && typeof savedAnswers === 'object') {
-          setAllAnswers(savedAnswers);
+        if (parsed.allAnswers && typeof parsed.allAnswers === 'object') {
+          setAllAnswers(parsed.allAnswers);
         }
+        if (parsed.view) setView(parsed.view);
+        if (typeof parsed.quizIndex === 'number') setCurrentQuizIndex(parsed.quizIndex);
+        if (parsed.timerMode) setTimerMode(parsed.timerMode);
+        if (parsed.timerSettings) setTimerSettings(parsed.timerSettings);
       }
     } catch {
       // ignore parse errors
@@ -35,18 +51,81 @@ export default function Page() {
     setMounted(true);
   }, []);
 
-  // Persist to localStorage whenever answers or chapter changes
+  // Persist to localStorage whenever crucial state changes
   useEffect(() => {
     if (!mounted) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ chapterIndex: currentChapterIndex, allAnswers }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ 
+        chapterIndex: currentChapterIndex, 
+        allAnswers,
+        view,
+        quizIndex: currentQuizIndex,
+        timerMode,
+        timerSettings
+      }));
     } catch {
       // ignore storage errors
     }
-  }, [currentChapterIndex, allAnswers, mounted]);
+  }, [currentChapterIndex, allAnswers, view, currentQuizIndex, timerMode, timerSettings, mounted]);
 
   const currentChapter = chapters[currentChapterIndex];
   const currentQuiz = currentChapter.quizzes[currentQuizIndex];
+
+  // Initialize Set Timer when entering Quiz view
+  useEffect(() => {
+    if (view === 'quiz' && !isSetTimerRunning && !isSetTimeUp) {
+      if (timerMode === 'per-set' || timerMode === 'both') {
+        const totalTime = currentChapter.quizzes.length * timerSettings.perSet;
+        setTimeRemainingSet(totalTime);
+        setIsSetTimerRunning(true);
+      }
+    } else if (view !== 'quiz') {
+      setIsSetTimerRunning(false);
+      setIsSetTimeUp(false);
+    }
+  }, [view, currentChapterIndex, timerMode, timerSettings.perSet, currentChapter.quizzes.length]);
+
+  // Reset Question Timer when quiz index changes
+  useEffect(() => {
+    setTimeRemainingQuestion(timerSettings.perQuestion);
+  }, [currentQuizIndex, timerSettings.perQuestion]);
+
+  // Timer Tick Logic
+  useEffect(() => {
+    if (view !== 'quiz' || isSetTimeUp) return;
+
+    const interval = setInterval(() => {
+      // Handle Set Timer
+      if ((timerMode === 'per-set' || timerMode === 'both') && isSetTimerRunning) {
+        setTimeRemainingSet((prev) => {
+          if (prev <= 1) {
+            setIsSetTimeUp(true);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }
+
+      // Handle Question Timer (only runs if an answer hasn't been selected yet)
+      if ((timerMode === 'per-question' || timerMode === 'both') && selectedAnswer === null && currentChapter.layout !== 'scrollable') {
+        setTimeRemainingQuestion((prev) => {
+          if (prev <= 1) {
+            // Time's up for this question - auto skip/reveal
+            setSelectedAnswer(-1); // Use -1 to indicate skipped/timed out
+            setShowExplanation(true);
+            setAllAnswers(prevAns => ({
+              ...prevAns,
+              [`${currentChapter.id}-${currentQuiz.id}`]: -1
+            }));
+            return 0;
+          }
+          return prev - 1;
+        });
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [view, timerMode, isSetTimerRunning, selectedAnswer, currentChapter.layout, currentQuiz.id, currentChapter.id, isSetTimeUp]);
 
   const jumpToChapter = (index: number) => {
     setCurrentChapterIndex(index);
@@ -54,7 +133,8 @@ export default function Page() {
     setCurrentQuizIndex(0);
     setSelectedAnswer(null);
     setShowExplanation(false);
-    setAllAnswers({});
+    setIsSetTimerRunning(false);
+    setIsSetTimeUp(false);
     setIsSidebarOpen(false);
     window.scrollTo({ top: 0, behavior: 'instant' });
   };
@@ -430,7 +510,7 @@ export default function Page() {
       <div className="flex-1 flex flex-col h-full bg-[#f8fafc] overflow-hidden relative">
 
         {/* Top Header */}
-        <header className="h-20 px-4 lg:px-12 flex items-center justify-between shrink-0 bg-white md:border-b border-slate-200 z-40">
+        <header className="h-20 px-4 lg:px-12 flex items-center justify-between shrink-0 bg-white md:border-b border-slate-200 z-40 relative">
           <div className="flex items-center gap-4">
             <button
               className="md:hidden p-2 rounded-xl bg-slate-100 border border-slate-200 text-slate-600"
@@ -445,31 +525,113 @@ export default function Page() {
             </div>
           </div>
 
-          <div className="flex bg-slate-100 p-1.5 rounded-2xl md:border border-slate-200">
-            <button
-              onClick={() => setView('lesson')}
-              className={`px-3 md:px-5 py-2 rounded-xl text-sm font-bold tracking-wide transition-colors duration-200 flex items-center gap-2 ${view === 'lesson'
-                ? 'bg-white text-slate-900 shadow-sm md:shadow-none md:border border-slate-200'
-                : 'text-slate-500 hover:text-slate-700'
-                }`}
-            >
-              <LayoutDashboard className="w-4 h-4" /> Lesson
-            </button>
-            <button
-              onClick={() => {
-                setView('quiz');
-                setCurrentQuizIndex(0);
-                setSelectedAnswer(null);
-                setShowExplanation(false);
-                window.scrollTo({ top: 0, behavior: 'instant' });
-              }}
-              className={`px-3 md:px-5 py-2 rounded-xl text-sm font-bold tracking-wide transition-colors duration-200 flex items-center gap-2 ${view === 'quiz'
-                ? 'bg-white text-slate-900 shadow-sm md:shadow-none md:border border-slate-200'
-                : 'text-slate-500 hover:text-slate-700'
-                }`}
-            >
-              <CheckCircle2 className="w-4 h-4" /> Quiz
-            </button>
+          <div className="flex items-center gap-4">
+            {/* Timer Settings Button (Only in Quiz view) */}
+            {view === 'quiz' && (
+              <div className="relative">
+                <button
+                  onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+                  className="p-2.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 hover:bg-slate-200 transition-colors tooltip-trigger"
+                  title="Timer Settings"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+
+                <AnimatePresence>
+                  {isSettingsOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute right-0 top-full mt-2 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 p-5 z-50 text-slate-800"
+                    >
+                      <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
+                        <Clock className="w-5 h-5" /> Timer Settings
+                      </h3>
+                      
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-semibold mb-2">Timer Mode</label>
+                          <select 
+                            value={timerMode} 
+                            onChange={(e) => setTimerMode(e.target.value as TimerMode)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+                          >
+                            <option value="off">Off (Default)</option>
+                            <option value="per-question">Per Question</option>
+                            <option value="per-set">Per Set</option>
+                            <option value="both">Both</option>
+                          </select>
+                        </div>
+                        
+                        {(timerMode === 'per-question' || timerMode === 'both') && (
+                          <div>
+                            <label className="block text-sm font-semibold mb-2 flex justify-between">
+                              <span>Per Question</span>
+                              <span className="text-primary font-bold">{timerSettings.perQuestion}s</span>
+                            </label>
+                            <input 
+                              type="range" 
+                              min="30" max="300" step="10"
+                              value={timerSettings.perQuestion}
+                              onChange={(e) => setTimerSettings(prev => ({ ...prev, perQuestion: parseInt(e.target.value) }))}
+                              className="w-full accent-slate-900"
+                            />
+                            <p className="text-xs text-slate-500 mt-1">Auto-skips when time is up.</p>
+                          </div>
+                        )}
+                        
+                        {(timerMode === 'per-set' || timerMode === 'both') && (
+                          <div>
+                            <label className="block text-sm font-semibold mb-2 flex justify-between">
+                              <span>Per Question Avg (Set)</span>
+                              <span className="text-primary font-bold">{timerSettings.perSet}s</span>
+                            </label>
+                            <input 
+                              type="range" 
+                              min="30" max="300" step="10"
+                              value={timerSettings.perSet}
+                              onChange={(e) => setTimerSettings(prev => ({ ...prev, perSet: parseInt(e.target.value) }))}
+                              className="w-full accent-slate-900"
+                            />
+                            <p className="text-xs text-slate-500 mt-1">Total time = {timerSettings.perSet}s × {currentChapter.quizzes.length} questions.</p>
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+
+            {/* View Toggle */}
+            <div className="flex bg-slate-100 p-1.5 rounded-2xl md:border border-slate-200">
+              <button
+                onClick={() => setView('lesson')}
+                className={`px-3 md:px-5 py-2 rounded-xl text-sm font-bold tracking-wide transition-colors duration-200 flex items-center gap-2 ${view === 'lesson'
+                  ? 'bg-white text-slate-900 shadow-sm md:shadow-none md:border border-slate-200'
+                  : 'text-slate-500 hover:text-slate-700'
+                  }`}
+              >
+                <LayoutDashboard className="w-4 h-4" /> Lesson
+              </button>
+              <button
+                onClick={() => {
+                  setView('quiz');
+                  setCurrentQuizIndex(0);
+                  setSelectedAnswer(null);
+                  setShowExplanation(false);
+                  setIsSettingsOpen(false);
+                  window.scrollTo({ top: 0, behavior: 'instant' });
+                }}
+                className={`px-3 md:px-5 py-2 rounded-xl text-sm font-bold tracking-wide transition-colors duration-200 flex items-center gap-2 ${view === 'quiz'
+                  ? 'bg-white text-slate-900 shadow-sm md:shadow-none md:border border-slate-200'
+                  : 'text-slate-500 hover:text-slate-700'
+                  }`}
+              >
+                <CheckCircle2 className="w-4 h-4" /> Quiz
+              </button>
+            </div>
           </div>
         </header>
 
@@ -553,18 +715,81 @@ export default function Page() {
                   exit={{ opacity: 0, y: -10 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-4">
-                    <div>
-                      <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-bold uppercase tracking-widest text-xs mb-4 border border-slate-200">
-                        <Target className="w-3 h-3" /> Question {currentQuizIndex + 1} of {currentChapter.quizzes.length}
-                      </span>
-                      <h2 className="text-3xl lg:text-4xl font-extrabold text-slate-900 tracking-tight">
-                        Test Your Instincts
-                      </h2>
+                  {/* Timer UI Display */}
+                  {(timerMode !== 'off') && !isSetTimeUp && (
+                    <div className="mb-8 space-y-3">
+                      {(timerMode === 'per-set' || timerMode === 'both') && (
+                        <div className="bg-slate-100 rounded-xl p-3 border border-slate-200 flex items-center gap-4">
+                          <div className="flex items-center gap-2 text-slate-600 font-bold shrink-0 min-w-[100px]">
+                            <Clock className="w-4 h-4" /> 
+                            {Math.floor(timeRemainingSet / 60)}:{(timeRemainingSet % 60).toString().padStart(2, '0')}
+                          </div>
+                          <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full transition-all duration-1000 linear ${timeRemainingSet < 60 ? 'bg-red-500' : 'bg-slate-900'}`} 
+                              style={{ width: `${Math.max(0, (timeRemainingSet / (currentChapter.quizzes.length * timerSettings.perSet)) * 100)}%` }} 
+                            />
+                          </div>
+                        </div>
+                      )}
+                      
+                      {(timerMode === 'per-question' || timerMode === 'both') && currentChapter.layout !== 'scrollable' && (
+                        <div className="bg-orange-50 rounded-xl p-3 border border-orange-200 flex items-center gap-4">
+                          <div className="flex items-center gap-2 text-orange-600 font-bold shrink-0 min-w-[100px]">
+                            <Target className="w-4 h-4" /> 
+                            {Math.floor(timeRemainingQuestion / 60)}:{(timeRemainingQuestion % 60).toString().padStart(2, '0')}
+                          </div>
+                          <div className="h-2 w-full bg-orange-200 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full transition-all duration-1000 linear ${timeRemainingQuestion < 10 ? 'bg-red-500' : 'bg-orange-500'}`} 
+                              style={{ width: `${Math.max(0, (timeRemainingQuestion / timerSettings.perQuestion) * 100)}%` }} 
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
+                  )}
 
-                  {currentChapter.layout === 'scrollable' ? renderScrollableQuizContent(currentChapter.quizzes) : renderQuizContent(currentQuiz)}
+                  {isSetTimeUp ? (
+                    <div className="text-center py-20 bg-red-50 rounded-3xl border-2 border-red-200">
+                      <div className="w-24 h-24 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <Clock className="w-12 h-12 text-red-600" />
+                      </div>
+                      <h2 className="text-4xl font-extrabold text-red-900 mb-4 tracking-tight">Time&apos;s Up!</h2>
+                      <p className="text-xl text-red-700 font-medium mb-8 max-w-md mx-auto">
+                        The time limit for this exam set has expired. 
+                      </p>
+                      <div className="flex gap-4 justify-center">
+                        <button
+                          onClick={handleResetMockExam}
+                          className="px-8 py-3 rounded-xl bg-white text-red-700 font-bold border-2 border-red-200 hover:bg-red-50 transition-colors"
+                        >
+                          Reset Exam
+                        </button>
+                        <button
+                          onClick={handleNextChapter}
+                          className="px-8 py-3 rounded-xl bg-red-600 text-white font-bold hover:bg-red-700 transition-colors flex items-center gap-2"
+                        >
+                          Next Chapter <ArrowRight className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-4">
+                        <div>
+                          <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-bold uppercase tracking-widest text-xs mb-4 border border-slate-200">
+                            <Target className="w-3 h-3" /> Question {currentQuizIndex + 1} of {currentChapter.quizzes.length}
+                          </span>
+                          <h2 className="text-3xl lg:text-4xl font-extrabold text-slate-900 tracking-tight">
+                            Test Your Instincts
+                          </h2>
+                        </div>
+                      </div>
+
+                      {currentChapter.layout === 'scrollable' ? renderScrollableQuizContent(currentChapter.quizzes) : renderQuizContent(currentQuiz)}
+                    </>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>
